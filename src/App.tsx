@@ -88,6 +88,7 @@ function App() {
   const [selectedTournament, setSelectedTournament] = useState<Tournament | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   useEffect(() => {
     const loadData = async () => {
@@ -177,11 +178,18 @@ function App() {
           ))}
         </nav>
         <div className="topbar-actions">
-          <button className="icon-button mobile-menu" aria-label="Open menu"><Menu size={19} /></button>
+          <button className="icon-button mobile-menu" onClick={() => setIsMenuOpen((open) => !open)} aria-label={isMenuOpen ? 'Close menu' : 'Open menu'} aria-expanded={isMenuOpen}><Menu size={19} /></button>
           <button className="organizer-button" onClick={() => setView('tournaments')}><LayoutGrid size={16} /> Organizer view</button>
           <button className="profile-button" aria-label="Your profile">PC</button>
         </div>
       </header>
+      <nav className={isMenuOpen ? 'mobile-nav open' : 'mobile-nav'} aria-label="Mobile navigation">
+        {(['overview', 'tournaments', 'matches'] as View[]).map((item) => (
+          <button key={item} className={view === item ? 'mobile-nav-link active' : 'mobile-nav-link'} onClick={() => { setView(item); setIsMenuOpen(false); }}>
+            {item[0].toUpperCase() + item.slice(1)} <ChevronRight size={15} />
+          </button>
+        ))}
+      </nav>
 
       <main>
         {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss"><X size={16} /></button></div>}
