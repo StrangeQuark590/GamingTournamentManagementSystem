@@ -1,255 +1,391 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ArrowUpRight,
   CalendarDays,
-  Check,
   ChevronRight,
-  CircleDot,
-  Clock3,
-  Gamepad2,
   LayoutGrid,
+  LogOut,
   Menu,
-  Search,
-  Shield,
   Swords,
   Trophy,
   Users,
   X,
-  Zap,
 } from 'lucide-react';
-import { isSupabaseConfigured, supabase } from '@/lib/supabase';
+import { AuthProvider, useAuth } from '@/lib/auth';
+import { supabase } from '@/lib/supabase';
+import { slugify } from '@/lib/format';
+import type { Game, Match, Registration, Team, TeamMember, Tournament, View } from '@/lib/types';
+import { AuthScreen } from '@/components/AuthScreen';
+import { Dashboard } from '@/components/Dashboard';
+import { TournamentsView } from '@/components/TournamentsView';
+import { MatchesView } from '@/components/MatchesView';
+import { TeamsView } from '@/components/TeamsView';
+import { ProfileView } from '@/components/ProfileView';
 
-type Game = {
-  id: string;
-  slug: string;
-  name: string;
-  genre: string;
-  platform: string;
-  accent: string;
-};
+const NAV_ITEMS: { view: View; label: string; icon: typeof Trophy }[] = [
+  { view: 'dashboard', label: 'Dashboard', icon: LayoutGrid },
+  { view: 'tournaments', label: 'Tournaments', icon: Trophy },
+  { view: 'matches', label: 'Matches', icon: CalendarDays },
+  { view: 'teams', label: 'Teams', icon: Users },
+];
 
-type Tournament = {
-  id: string;
-  game_id: string;
-  slug: string;
-  title: string;
-  format: string;
-  start_date: string;
-  end_date: string;
-  registration_deadline: string;
-  entry_fee: number;
-  prize_pool: number;
-  max_participants: number;
-  status: 'Upcoming' | 'Open' | 'Ongoing' | 'Completed' | 'Cancelled';
-  description: string;
-  games?: Game;
-};
-
-type Registration = {
-  id: string;
-  tournament_id: string;
-  entrant_name: string;
-  email: string;
-  entry_type: 'Solo' | 'Team';
-  status: string;
-};
-
-type Match = {
-  id: string;
-  tournament_id: string;
-  round_name: string;
-  match_number: number;
-  participant_one: string;
-  participant_two: string;
-  scheduled_time: string;
-  status: 'Scheduled' | 'Live' | 'Completed' | 'Cancelled';
-  score_one: number;
-  score_two: number;
-  tournaments?: { title: string; slug: string };
-};
-
-type View = 'overview' | 'tournaments' | 'matches';
-
-const formatMoney = (value: number) => `$${value.toLocaleString('en-US')}`;
-const formatDate = (value: string, options?: Intl.DateTimeFormatOptions) =>
-  new Intl.DateTimeFormat('en-US', options ?? { month: 'short', day: 'numeric' }).format(new Date(value));
-const formatTime = (value: string) =>
-  new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(new Date(value));
-
-function App() {
-  const [view, setView] = useState<View>('overview');
+function Shell() {
+  const { user, profile, loading, error: authError, signOut } = useAuth();
+  const [view, setView] = useState<View>('dashboard');
   const [games, setGames] = useState<Game[]>([]);
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [registrations, setRegistrations] = useState<Registration[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
-  const [query, setQuery] = useState('');
-  const [activeGame, setActiveGame] = useState('All games');
-  const [isRegistering, setIsRegistering] = useState(false);
-  const [selectedTournament, setSelectedTournament] = useState<Tournament | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [selectedTournamentId, setSelectedTournamentId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [dataLoading, setDataLoading] = useState(true);
 
-  useEffect(() => {
-    const loadData = async () => {
-      setIsLoading(true);
-      if (!isSupabaseConfigured || !supabase) {
-        setError('Tournament data is not connected in this deployment yet. Add the Supabase settings to your GitHub Pages build.');
-        setIsLoading(false);
-        return;
-      }
-      const [gamesResult, tournamentsResult, registrationsResult, matchesResult] = await Promise.all([
-        supabase.from('games').select('*').order('name'),
-        supabase.from('tournaments').select('*, games(*)').order('start_date'),
-        supabase.from('registrations').select('*'),
-        supabase.from('matches').select('*, tournaments(title, slug)').order('scheduled_time'),
-      ]);
+  const loadData = useCallback(async () => {
+    if (!supabase) return;
+    setDataLoading(true);
+    const [gamesR, tournamentsR, registrationsR, matchesR, teamsR, membersR] = await Promise.all([
+      supabase.from('games').select('*').order('name'),
+      supabase.from('tournaments').select('*, games(*)').order('start_date'),
+      supabase.from('registrations').select('*, tournaments(id, title, slug)').order('registered_at', { ascending: false }),
+      supabase.from('matches').select('*, tournaments(title, slug)').order('scheduled_time'),
+      supabase.from('teams').select('*, games(*)').order('created_at', { ascending: false }),
+      supabase.from('team_members').select('*, profiles(id, display_name, gamer_tag)').order('joined_at'),
+    ]);
 
-      const firstError = gamesResult.error ?? tournamentsResult.error ?? registrationsResult.error ?? matchesResult.error;
-      if (firstError) {
-        setError('We could not load the tournament board right now. Please refresh and try again.');
-      } else {
-        setGames(gamesResult.data ?? []);
-        setTournaments((tournamentsResult.data as Tournament[]) ?? []);
-        setRegistrations(registrationsResult.data ?? []);
-        setMatches((matchesResult.data as Match[]) ?? []);
-      }
-      setIsLoading(false);
-    };
-
-    void loadData();
+    const firstError = gamesR.error ?? tournamentsR.error ?? registrationsR.error ?? matchesR.error ?? teamsR.error ?? membersR.error;
+    if (firstError) {
+      setError('We could not load the tournament board right now. Please refresh.');
+    } else {
+      setGames(gamesR.data as Game[] ?? []);
+      setTournaments((tournamentsR.data as Tournament[]) ?? []);
+      setRegistrations((registrationsR.data as Registration[]) ?? []);
+      setMatches((matchesR.data as Match[]) ?? []);
+      setTeams((teamsR.data as Team[]) ?? []);
+      setTeamMembers((membersR.data as TeamMember[]) ?? []);
+      setError('');
+    }
+    setDataLoading(false);
   }, []);
 
-  const openTournaments = tournaments.filter((tournament) => tournament.status === 'Open' || tournament.status === 'Upcoming');
-  const liveMatches = matches.filter((match) => match.status === 'Live');
-  const activeTournament = tournaments.find((tournament) => tournament.status === 'Ongoing') ?? tournaments[0];
-  const totalPrizePool = tournaments.reduce((sum, tournament) => sum + Number(tournament.prize_pool), 0);
+  useEffect(() => {
+    if (user) void loadData();
+  }, [user, loadData]);
 
-  const filteredTournaments = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    return tournaments.filter((tournament) => {
-      const matchesGame = activeGame === 'All games' || tournament.games?.name === activeGame;
-      const matchesQuery = !normalizedQuery || `${tournament.title} ${tournament.format} ${tournament.games?.name}`.toLowerCase().includes(normalizedQuery);
-      return matchesGame && matchesQuery;
-    });
-  }, [activeGame, query, tournaments]);
+  const membersByTeam = useMemo(() => {
+    const map: Record<string, TeamMember[]> = {};
+    for (const m of teamMembers) {
+      (map[m.team_id] ??= []).push(m);
+    }
+    return map;
+  }, [teamMembers]);
 
-  const openRegistration = (tournament: Tournament) => {
-    setSelectedTournament(tournament);
-    setIsRegistering(true);
+  const myRegistrations = useMemo(
+    () => registrations.filter((r) => r.user_id === user?.id),
+    [registrations, user?.id],
+  );
+
+  const myTeams = useMemo(
+    () => teams.filter((t) => t.captain_id === user?.id || (membersByTeam[t.id] ?? []).some((m) => m.user_id === user?.id)),
+    [teams, membersByTeam, user?.id],
+  );
+
+  const myTeamsForRegister = useMemo(
+    () => myTeams.map((t) => ({ id: t.id, name: t.name })),
+    [myTeams],
+  );
+
+  // ---- Tournament actions ----
+  const handleCreateTournament = async (values: Record<string, string>) => {
+    if (!supabase || !user) return;
+    const game = games.find((g) => g.name === values.gameName);
+    const startDate = values.startDate ? new Date(values.startDate).toISOString() : new Date().toISOString();
+    const endDate = values.startDate ? new Date(values.startDate).toISOString() : startDate;
+    const regDeadline = values.registrationDeadline ? new Date(values.registrationDeadline).toISOString() : startDate;
+    const { data, error: err } = await supabase
+      .from('tournaments')
+      .insert({
+        title: values.title,
+        slug: slugify(`${values.title}-${Date.now()}`),
+        game_id: game?.id ?? games[0]?.id,
+        format: values.format,
+        start_date: startDate,
+        end_date: endDate,
+        registration_deadline: regDeadline,
+        entry_fee: Number(values.entryFee) || 0,
+        prize_pool: Number(values.prizePool) || 0,
+        max_participants: Number(values.maxParticipants) || 32,
+        status: 'Open',
+        description: values.description,
+        organizer_id: user.id,
+      })
+      .select('*, games(*)')
+      .single();
+    if (err) { setError('Could not create the tournament.'); return; }
+    setTournaments((prev) => [data as Tournament, ...prev]);
   };
 
-  const handleRegistration = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!selectedTournament || !supabase) return;
-    const formData = new FormData(event.currentTarget);
-    const entrantName = String(formData.get('entrantName') ?? '').trim();
-    const email = String(formData.get('email') ?? '').trim();
-    const entryType = String(formData.get('entryType') ?? 'Solo') as 'Solo' | 'Team';
-    const { error: insertError } = await supabase.from('registrations').insert({
-      tournament_id: selectedTournament.id,
-      entrant_name: entrantName,
-      email,
-      entry_type: entryType,
-    });
-
-    if (insertError) {
-      setError(insertError.code === '23505' ? 'That email is already registered for this tournament.' : 'Registration could not be completed. Please try again.');
+  const handleRegister = async (
+    tournament: Tournament,
+    values: { entrantName: string; email: string; entryType: 'Solo' | 'Team'; teamId?: string | null },
+  ) => {
+    if (!supabase || !user) return;
+    const { data, error: err } = await supabase
+      .from('registrations')
+      .insert({
+        tournament_id: tournament.id,
+        entrant_name: values.entrantName,
+        email: values.email,
+        entry_type: values.entryType,
+        user_id: user.id,
+        team_id: values.teamId || null,
+      })
+      .select('*, tournaments(id, title, slug)')
+      .single();
+    if (err) {
+      setError(err.code === '23505' ? 'You are already registered for this tournament.' : 'Registration could not be completed.');
       return;
     }
-
-    setRegistrations((current) => [...current, { id: crypto.randomUUID(), tournament_id: selectedTournament.id, entrant_name: entrantName, email, entry_type: entryType, status: 'Pending' }]);
-    setIsRegistering(false);
-    setSelectedTournament(null);
+    setRegistrations((prev) => [data as Registration, ...prev]);
   };
+
+  const handleCancelRegistration = async (registrationId: string) => {
+    if (!supabase) return;
+    const { error: err } = await supabase.from('registrations').delete().eq('id', registrationId);
+    if (err) { setError('Could not cancel your registration.'); return; }
+    setRegistrations((prev) => prev.filter((r) => r.id !== registrationId));
+  };
+
+  const handleUpdateRegistrationStatus = async (registrationId: string, status: 'Approved' | 'Rejected') => {
+    if (!supabase) return;
+    const { error: err } = await supabase.from('registrations').update({ status }).eq('id', registrationId);
+    if (err) { setError('Could not update registration status.'); return; }
+    setRegistrations((prev) => prev.map((r) => (r.id === registrationId ? { ...r, status } : r)));
+  };
+
+  // ---- Match actions ----
+  const handleCreateMatch = async (values: Record<string, string>) => {
+    if (!supabase || !user) return;
+    const tournament = tournaments.find((t) => t.title === values.tournamentTitle && t.organizer_id === user.id);
+    if (!tournament) { setError('Select one of your tournaments.'); return; }
+    const { data, error: err } = await supabase
+      .from('matches')
+      .insert({
+        tournament_id: tournament.id,
+        round_name: values.roundName,
+        match_number: Math.floor(Math.random() * 1000) + 1,
+        participant_one: values.participantOne,
+        participant_two: values.participantTwo,
+        scheduled_time: new Date(values.scheduledTime).toISOString(),
+        status: 'Scheduled',
+      })
+      .select('*, tournaments(title, slug)')
+      .single();
+    if (err) { setError('Could not schedule the match.'); return; }
+    setMatches((prev) => [...prev, data as Match]);
+  };
+
+  const handleUpdateMatch = async (
+    matchId: string,
+    values: { status: Match['status']; scoreOne: number; scoreTwo: number; winner: string | null },
+  ) => {
+    if (!supabase) return;
+    const { error: err } = await supabase
+      .from('matches')
+      .update({ status: values.status, score_one: values.scoreOne, score_two: values.scoreTwo, winner: values.winner })
+      .eq('id', matchId);
+    if (err) { setError('Could not update the match.'); return; }
+    setMatches((prev) => prev.map((m) => (m.id === matchId ? { ...m, ...values } : m)));
+  };
+
+  // ---- Team actions ----
+  const handleCreateTeam = async (values: Record<string, string>) => {
+    if (!supabase || !user) return;
+    const game = games.find((g) => g.name === values.gameName);
+    const { data, error: err } = await supabase
+      .from('teams')
+      .insert({
+        name: values.name,
+        slug: slugify(`${values.name}-${Date.now()}`),
+        game_id: game?.id ?? null,
+        captain_id: user.id,
+        description: values.description,
+        region: values.region,
+      })
+      .select('*, games(*)')
+      .single();
+    if (err) { setError('Could not create the team.'); return; }
+    const team = data as Team;
+    setTeams((prev) => [team, ...prev]);
+    // captain auto-joins as a member
+    const { data: memberData } = await supabase
+      .from('team_members')
+      .insert({ team_id: team.id, user_id: user.id, role: 'captain' })
+      .select('*, profiles(id, display_name, gamer_tag)')
+      .single();
+    if (memberData) setTeamMembers((prev) => [...prev, memberData as TeamMember]);
+  };
+
+  const handleJoinTeam = async (teamId: string) => {
+    if (!supabase || !user) return;
+    const { data, error: err } = await supabase
+      .from('team_members')
+      .insert({ team_id: teamId, user_id: user.id, role: 'member' })
+      .select('*, profiles(id, display_name, gamer_tag)')
+      .single();
+    if (err) { setError(err.code === '23505' ? 'You are already on this team.' : 'Could not join the team.'); return; }
+    setTeamMembers((prev) => [...prev, data as TeamMember]);
+  };
+
+  const handleLeaveTeam = async (teamId: string) => {
+    if (!supabase || !user) return;
+    const { error: err } = await supabase.from('team_members').delete().eq('team_id', teamId).eq('user_id', user.id);
+    if (err) { setError('Could not leave the team.'); return; }
+    setTeamMembers((prev) => prev.filter((m) => !(m.team_id === teamId && m.user_id === user.id)));
+  };
+
+  const handleRemoveMember = async (teamId: string, userId: string) => {
+    if (!supabase) return;
+    const { error: err } = await supabase.from('team_members').delete().eq('team_id', teamId).eq('user_id', userId);
+    if (err) { setError('Could not remove member.'); return; }
+    setTeamMembers((prev) => prev.filter((m) => !(m.team_id === teamId && m.user_id === userId)));
+  };
+
+  // ---- Profile actions ----
+  const handleSaveProfile = async (values: { displayName: string; gamerTag: string; bio: string }) => {
+    if (!supabase || !user) return;
+    const { error: err } = await supabase
+      .from('profiles')
+      .update({ display_name: values.displayName, gamer_tag: values.gamerTag, bio: values.bio, updated_at: new Date().toISOString() })
+      .eq('id', user.id);
+    if (err) { setError('Could not save your profile.'); return; }
+  };
+
+  const handleBecomeOrganizer = async () => {
+    if (!supabase || !user) return;
+    const { error: err } = await supabase.from('profiles').update({ role: 'organizer' }).eq('id', user.id);
+    if (err) { setError('Could not update your role.'); return; }
+    await loadData();
+  };
+
+  // ---- Render gates ----
+  if (loading) {
+    return <div className="app-shell"><main className="loading-state"><span className="section-kicker">LOADING</span><h2>Warming up the arena…</h2></main></div>;
+  }
+
+  if (!user) {
+    return <AuthScreen />;
+  }
+
+  const displayError = error || authError;
+  const initials = (profile?.display_name || profile?.gamer_tag || user.email || '?').slice(0, 2).toUpperCase();
 
   return (
     <div className="app-shell">
       <header className="topbar">
-        <button className="brand" onClick={() => setView('overview')} aria-label="Go to dashboard">
+        <button className="brand" onClick={() => setView('dashboard')} aria-label="Go to dashboard">
           <span className="brand-mark"><Swords size={18} strokeWidth={2.5} /></span>
           <span>bracket<span className="brand-dot">.</span>club</span>
         </button>
         <nav className="desktop-nav" aria-label="Primary navigation">
-          {(['overview', 'tournaments', 'matches'] as View[]).map((item) => (
-            <button key={item} className={view === item ? 'nav-link active' : 'nav-link'} onClick={() => setView(item)}>
-              {item[0].toUpperCase() + item.slice(1)}
+          {NAV_ITEMS.map((item) => (
+            <button key={item.view} className={view === item.view ? 'nav-link active' : 'nav-link'} onClick={() => setView(item.view)}>
+              {item.label}
             </button>
           ))}
         </nav>
         <div className="topbar-actions">
           <button className="icon-button mobile-menu" onClick={() => setIsMenuOpen((open) => !open)} aria-label={isMenuOpen ? 'Close menu' : 'Open menu'} aria-expanded={isMenuOpen}><Menu size={19} /></button>
-          <button className="organizer-button" onClick={() => setView('tournaments')}><LayoutGrid size={16} /> Organizer view</button>
-          <button className="profile-button" aria-label="Your profile">PC</button>
+          <button className="profile-button" onClick={() => setView('profile')} aria-label="Your profile">{initials}</button>
+          <button className="icon-button" onClick={() => void signOut()} aria-label="Sign out"><LogOut size={15} /></button>
         </div>
       </header>
+
       <nav className={isMenuOpen ? 'mobile-nav open' : 'mobile-nav'} aria-label="Mobile navigation">
-        {(['overview', 'tournaments', 'matches'] as View[]).map((item) => (
-          <button key={item} className={view === item ? 'mobile-nav-link active' : 'mobile-nav-link'} onClick={() => { setView(item); setIsMenuOpen(false); }}>
-            {item[0].toUpperCase() + item.slice(1)} <ChevronRight size={15} />
+        {[...NAV_ITEMS, { view: 'profile' as View, label: 'Profile', icon: Users }].map((item) => (
+          <button key={item.view} className={view === item.view ? 'mobile-nav-link active' : 'mobile-nav-link'} onClick={() => { setView(item.view); setIsMenuOpen(false); }}>
+            {item.label} <ChevronRight size={15} />
           </button>
         ))}
       </nav>
 
       <main>
-        {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss"><X size={16} /></button></div>}
-        <section className="hero-section">
-          <div className="hero-copy">
-            <div className="eyebrow"><span className="live-pip" /> THE COMPETITIVE HOME FOR EVERYONE</div>
-            <h1>Find your next<br /><em>legendary</em> match.</h1>
-            <p>Discover tournaments, build your squad, and prove what you can do. No noise. Just good games and better competition.</p>
-            <div className="hero-actions">
-              <button className="primary-button" onClick={() => setView('tournaments')}>Explore tournaments <ArrowUpRight size={17} /></button>
-              <button className="text-button" onClick={() => openTournaments[0] && openRegistration(openTournaments[0])}>Join the next event <ChevronRight size={17} /></button>
-            </div>
-          </div>
-          <div className="hero-visual" aria-hidden="true">
-            <div className="grid-lines" />
-            <div className="orbit orbit-one" />
-            <div className="orbit orbit-two" />
-            <div className="hero-badge badge-top"><span className="badge-icon"><Zap size={16} /></span><span><strong>2,480+</strong><small>active competitors</small></span></div>
-            <div className="hero-badge badge-bottom"><span className="mini-avatars"><i>R</i><i>N</i><i>V</i></span><span><strong>Good energy only</strong><small>12 events happening today</small></span></div>
-            <div className="hero-emblem"><Trophy size={42} strokeWidth={1.3} /><span>PLAY<br /><b>LOUD</b></span></div>
-          </div>
-        </section>
+        {displayError && <div className="error-banner"><span>{displayError}</span><button onClick={() => setError('')} aria-label="Dismiss"><X size={16} /></button></div>}
 
-        <section className="stats-row" aria-label="Community statistics">
-          <div><span className="stat-label">Active tournaments</span><strong>{isLoading ? '—' : openTournaments.length.toString().padStart(2, '0')}</strong><span className="stat-change">+18% this month</span></div>
-          <div><span className="stat-label">Community players</span><strong>2,480</strong><span className="stat-change">+240 this week</span></div>
-          <div><span className="stat-label">Prize money live</span><strong>{formatMoney(totalPrizePool)}</strong><span className="stat-change">Across all events</span></div>
-          <div><span className="stat-label">Matches today</span><strong>{matches.length.toString().padStart(2, '0')}</strong><span className="stat-change">{liveMatches.length} live right now</span></div>
-        </section>
+        {view === 'dashboard' && (
+          <Dashboard
+            tournaments={tournaments}
+            matches={matches}
+            registrations={registrations}
+            myRegistrations={myRegistrations}
+            onBrowse={() => setView('tournaments')}
+            onRegister={(t) => { setSelectedTournamentId(t.id); setView('tournaments'); }}
+            onGoMatches={() => setView('matches')}
+          />
+        )}
 
-        <section className="content-section spotlight-section">
-          <div className="section-heading"><div><span className="section-kicker">CURATED FOR YOU</span><h2>In the spotlight</h2></div><button className="link-button" onClick={() => setView('tournaments')}>View all tournaments <ArrowUpRight size={16} /></button></div>
-          <div className="spotlight-grid">
-            {activeTournament && <article className="feature-card">
-              <div className="feature-top"><span className="status-badge live"><CircleDot size={13} /> {activeTournament.status}</span><span className="feature-date">{formatDate(activeTournament.start_date, { month: 'short', day: 'numeric', year: 'numeric' })}</span></div>
-              <div className="feature-content"><span className="game-label">{activeTournament.games?.name} <span>·</span> {activeTournament.games?.genre}</span><h3>{activeTournament.title}</h3><p>{activeTournament.description}</p><div className="feature-meta"><span><Trophy size={15} /> {formatMoney(Number(activeTournament.prize_pool))} prize pool</span><span><Users size={15} /> {registrations.filter((registration) => registration.tournament_id === activeTournament.id).length}/{activeTournament.max_participants} registered</span></div></div>
-              <button className="feature-cta" onClick={() => openRegistration(activeTournament)}>View tournament <ArrowUpRight size={17} /></button>
-            </article>}
-            <div className="side-events">
-              <div className="mini-heading"><span>UP NEXT</span><Clock3 size={15} /></div>
-              {openTournaments.slice(0, 3).map((tournament) => <button className="event-row" key={tournament.id} onClick={() => openRegistration(tournament)}><span className={`game-icon ${tournament.games?.accent ?? 'cyan'}`}><Gamepad2 size={17} /></span><span className="event-info"><strong>{tournament.title}</strong><small>{tournament.games?.name} · {tournament.format.split('·')[0].trim()}</small></span><span className="event-date">{formatDate(tournament.start_date)}<ChevronRight size={16} /></span></button>)}
-            </div>
-          </div>
-        </section>
+        {view === 'tournaments' && (
+          <TournamentsView
+            games={games}
+            tournaments={tournaments}
+            registrations={registrations}
+            selectedId={selectedTournamentId}
+            onSelect={setSelectedTournamentId}
+            onCreateTournament={handleCreateTournament}
+            onRegister={handleRegister}
+            onCancelRegistration={handleCancelRegistration}
+            onUpdateRegistrationStatus={handleUpdateRegistrationStatus}
+            myTeams={myTeamsForRegister}
+          />
+        )}
 
-        <section className="content-section browse-section">
-          <div className="section-heading"><div><span className="section-kicker">MAKE YOUR MOVE</span><h2>{view === 'matches' ? 'Live match center' : 'Browse the board'}</h2></div><div className="view-switcher"><button className={view === 'tournaments' || view === 'overview' ? 'switch active' : 'switch'} onClick={() => setView('tournaments')}>Tournaments</button><button className={view === 'matches' ? 'switch active' : 'switch'} onClick={() => setView('matches')}>Match center</button></div></div>
-          {view === 'matches' ? <div className="matches-list">{matches.map((match) => <article className="match-card" key={match.id}><div className="match-context"><span className={`match-status ${match.status.toLowerCase()}`}>{match.status === 'Live' && <i />} {match.status}</span><small>{match.tournaments?.title} · {match.round_name}</small></div><div className="match-teams"><span>{match.participant_one}</span><b>{match.score_one} — {match.score_two}</b><span>{match.participant_two}</span></div><div className="match-time"><CalendarDays size={15} /> {formatDate(match.scheduled_time)} at {formatTime(match.scheduled_time)}</div></article>)}</div> : <>
-            <div className="browse-toolbar"><div className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tournaments" aria-label="Search tournaments" /></div><div className="game-filters"><button className={activeGame === 'All games' ? 'filter active' : 'filter'} onClick={() => setActiveGame('All games')}>All games</button>{games.map((game) => <button key={game.id} className={activeGame === game.name ? 'filter active' : 'filter'} onClick={() => setActiveGame(game.name)}>{game.name}</button>)}</div></div>
-            <div className="tournament-grid">{filteredTournaments.map((tournament) => <article className="tournament-card" key={tournament.id}><div className={`card-game-strip ${tournament.games?.accent ?? 'cyan'}`}><span className="game-icon"><Gamepad2 size={19} /></span><span>{tournament.games?.name}</span><span className={`status-badge ${tournament.status.toLowerCase()}`}>{tournament.status}</span></div><div className="card-body"><span className="game-label">{tournament.format}</span><h3>{tournament.title}</h3><p>{formatDate(tournament.start_date, { month: 'short', day: 'numeric', year: 'numeric' })} · {formatTime(tournament.start_date)}</p><div className="card-details"><span><Trophy size={14} /> {formatMoney(Number(tournament.prize_pool))}</span><span><Users size={14} /> {tournament.max_participants} slots</span></div><button className="card-button" onClick={() => openRegistration(tournament)} disabled={tournament.status === 'Completed' || tournament.status === 'Cancelled'}>{tournament.status === 'Open' ? 'Register now' : 'View details'} <ArrowUpRight size={16} /></button></div></article>)}</div>
-            {!isLoading && filteredTournaments.length === 0 && <div className="empty-state"><Shield size={24} /><p>No tournaments match that search yet.</p></div>}
-          </>}
-        </section>
+        {view === 'matches' && (
+          <MatchesView
+            matches={matches}
+            tournaments={tournaments}
+            games={games}
+            onCreateMatch={handleCreateMatch}
+            onUpdateMatch={handleUpdateMatch}
+          />
+        )}
+
+        {view === 'teams' && (
+          <TeamsView
+            games={games}
+            teams={teams}
+            membersByTeam={membersByTeam}
+            onCreateTeam={handleCreateTeam}
+            onJoinTeam={handleJoinTeam}
+            onLeaveTeam={handleLeaveTeam}
+            onRemoveMember={handleRemoveMember}
+          />
+        )}
+
+        {view === 'profile' && (
+          <ProfileView
+            myRegistrations={myRegistrations}
+            myTeams={myTeams}
+            membersByTeam={membersByTeam}
+            onSaveProfile={handleSaveProfile}
+            onBecomeOrganizer={handleBecomeOrganizer}
+          />
+        )}
       </main>
 
-      <footer className="footer"><div className="brand footer-brand"><span className="brand-mark"><Swords size={17} /></span><span>bracket<span className="brand-dot">.</span>club</span></div><span>Built for players who care about the game.</span><span>© 2026 bracket.club</span></footer>
-
-      {isRegistering && selectedTournament && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setIsRegistering(false)}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="register-title"><button className="modal-close" onClick={() => setIsRegistering(false)} aria-label="Close registration"><X size={18} /></button><span className="section-kicker">{selectedTournament.games?.name} · {selectedTournament.format}</span><h2 id="register-title">Claim your slot.</h2><p>Join <strong>{selectedTournament.title}</strong>. We will send your confirmation to the email below.</p><form onSubmit={handleRegistration}><label>Player or team name<input name="entrantName" required placeholder="e.g. Pixel Pioneers" /></label><label>Email address<input name="email" required type="email" placeholder="you@example.com" /></label><label>Entry type<select name="entryType" defaultValue="Solo"><option>Solo</option><option>Team</option></select></label><button className="primary-button full-width" type="submit">Submit registration <ArrowUpRight size={17} /></button></form><small className="modal-note"><Check size={14} /> Your entry will be marked pending until the organizer approves it.</small></div></div>}
+      <footer className="footer">
+        <div className="brand footer-brand"><span className="brand-mark"><Swords size={17} /></span><span>bracket<span className="brand-dot">.</span>club</span></div>
+        <span>Built for players who care about the game.</span>
+        <span>© 2026 bracket.club</span>
+      </footer>
     </div>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <AuthProvider>
+      <Shell />
+    </AuthProvider>
+  );
+}
