@@ -17,7 +17,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 
 type Game = {
   id: string;
@@ -92,6 +92,11 @@ function App() {
   useEffect(() => {
     const loadData = async () => {
       setIsLoading(true);
+      if (!isSupabaseConfigured || !supabase) {
+        setError('Tournament data is not connected in this deployment yet. Add the Supabase settings to your GitHub Pages build.');
+        setIsLoading(false);
+        return;
+      }
       const [gamesResult, tournamentsResult, registrationsResult, matchesResult] = await Promise.all([
         supabase.from('games').select('*').order('name'),
         supabase.from('tournaments').select('*, games(*)').order('start_date'),
@@ -135,7 +140,7 @@ function App() {
 
   const handleRegistration = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!selectedTournament) return;
+    if (!selectedTournament || !supabase) return;
     const formData = new FormData(event.currentTarget);
     const entrantName = String(formData.get('entrantName') ?? '').trim();
     const email = String(formData.get('email') ?? '').trim();
